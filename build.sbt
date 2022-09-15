@@ -42,6 +42,7 @@ lazy val commonSettings = Def.settings(
     "-language:existentials",
     "-unchecked",
     "-Xfatal-warnings",
-    "-language:postfixOps"
+    "-language:postfixOps",
+    "-explain"
   )
 )

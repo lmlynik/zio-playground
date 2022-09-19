@@ -46,15 +46,19 @@ object EventSourcedEntity {
       journal: Journal[EVENT],
       currentState: Ref[State]
     ) =
-      currentState.get.flatMap { st =>
-        journal
-          .load(persistenceId, st._1)
-          .runFoldZIO(st) { case (state, (offset, event)) =>
-            eventHandler(state.entity, event).tap(stateD =>
-              currentState.set(state.copy(offset = offset, entity = stateD))
-            ) *> currentState.get
-          }
-      } *> currentState.update(_.changeLoadState(LoadState.Hot)) *> currentState.get
+      for {
+        _ <- currentState.get.flatMap { st =>
+          journal
+            .load(persistenceId, st.offset)
+            .runFoldZIO(st) { case (state, (offset, event)) =>
+              eventHandler(state.entity, event).tap(stateD =>
+                currentState.getAndSet(state.copy(offset = offset, entity = stateD))
+              ) *> currentState.get
+            }
+        }
+        _ <- currentState.update(_.changeLoadState(LoadState.Hot))
+        r <- currentState.get
+      } yield r
 
     def commandDispatch(
       persistenceId: String,

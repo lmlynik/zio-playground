@@ -31,14 +31,14 @@ object MyPersistentBehavior {
 
   import EventSourcedEntity.*
   enum Command {
-    case NextFib extends Command
-    case Clear extends Command
-    case Get(promise: Promise[Nothing, List[Long]]) extends Command
+    case NextFib
+    case Clear
+    case Get(promise: Promise[Nothing, List[Long]])
   }
 
   enum Event {
-    case NextFibAdded extends Event
-    case Cleared extends Event
+    case NextFibAdded
+    case Cleared
   }
 
   final case class State(numbers: List[Long] = Nil)
@@ -85,6 +85,8 @@ object Main extends ZIOAppDefault:
     _       <- entity2.state.timed.debug("State 2:")
     _       <- getNumbers(entity2).debug("numbers")
     _       <- entity2.send(MyPersistentBehavior.Command.Clear)
+    _       <- entity2.send(MyPersistentBehavior.Command.NextFib)
+    _       <- entity2.send(MyPersistentBehavior.Command.NextFib)
     _       <- entity2.send(MyPersistentBehavior.Command.NextFib)
 
     _ <- ZIO.sleep(200.milli)

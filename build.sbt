@@ -5,7 +5,7 @@ ThisBuild / organization := "pl.mlynik"
 addCommandAlias("fmt", "all scalafmtSbt scalafmt test:scalafmt")
 
 lazy val root = (project in file("."))
-  .aggregate(crawler, serverNodes)
+  .aggregate(crawler, eventSourcing)
 
 lazy val crawler = (project in file("zio-crawler"))
   .settings(
@@ -13,9 +13,16 @@ lazy val crawler = (project in file("zio-crawler"))
   )
   .settings(commonSettings)
 
-lazy val serverNodes = (project in file("zio-server-nodes"))
+lazy val eventSourcing = (project in file("zio-event-sourcing"))
   .settings(
-    name := "zio-server-nodes"
+    name := "zio-event-sourcing"
+  )
+  .settings(commonSettings)
+  .dependsOn(macros)
+
+lazy val macros = (project in file("macros"))
+  .settings(
+    name := "macros"
   )
   .settings(commonSettings)
 
@@ -43,6 +50,6 @@ lazy val commonSettings = Def.settings(
     "-unchecked",
     "-Xfatal-warnings",
     "-language:postfixOps",
-    "-explain"
+    "-Xprint-suspension"
   )
 )

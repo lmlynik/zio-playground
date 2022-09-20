@@ -46,7 +46,7 @@ object MyPersistentBehavior {
 
   final case class State(numbers: List[Long] = Nil)
 
-  def apply(id: String): ZIO[Journal[Event], Journal.LoadError, EntityRef[Command, State]] =
+  def apply(id: String): ZIO[Journal[Event] & Scope, Journal.LoadError, EntityRef[Command, State]] =
     EventSourcedEntity[Command, Event, State](
       persistenceId = id,
       emptyState = State(),
@@ -55,7 +55,7 @@ object MyPersistentBehavior {
           case Command.NextNumber(value) => Effect.persist(Event.NextNumberAdded(value))
           case Command.Clear             => Effect.persist(Event.Cleared)
           case Command.Get(promise)      =>
-            promise.succeed(state.numbers) *> ZIO.log("Getting") *> Effect.none
+            promise.succeed(state.numbers) *> Effect.none
       ,
       eventHandler = (state, evt) =>
         evt match
@@ -68,29 +68,29 @@ object MyPersistentBehavior {
 
 object Main extends ZIOAppDefault:
 
+  import MyPersistentBehavior.*
   private def getNumbers(
-    entity: EventSourcedEntity.EntityRef[MyPersistentBehavior.Command, MyPersistentBehavior.State]
+    entity: EventSourcedEntity.EntityRef[Command, State]
   ) = for {
     promise <- Promise.make[Nothing, List[Long]]
     _       <- entity.send(MyPersistentBehavior.Command.Get(promise))
     resp    <- promise.await
-    _       <- ZIO.log("Got")
   } yield resp
 
-  val app = for {
-    entity   <- MyPersistentBehavior("fib1")
-    f1       <- ZIO.foreach(1 to 100)(n => entity.send(MyPersistentBehavior.Command.NextNumber(n))).fork
-    f2       <- ZIO.foreach(1 to 100)(n => entity.send(MyPersistentBehavior.Command.NextNumber(n))).fork
-    f3       <- ZIO.foreach(1 to 100)(n => entity.send(MyPersistentBehavior.Command.NextNumber(n))).fork
-    _        <- f1.join *> f2.join *> f3.join
-    numbers  <- getNumbers(entity)
-    _        <- ZIO.log(s"State 1: $numbers")
-    _        <- entity.passivate
-    entity2  <- MyPersistentBehavior("fib1")
-    _        <- ZIO.foreach(100 to 1 by -1)(n => entity2.send(MyPersistentBehavior.Command.NextNumber(n)))
-    numbers2 <- getNumbers(entity2)
-    _        <- ZIO.log(s"State 2: $numbers2")
-  } yield ()
+  val entityRun = ZIO.scoped {
+    for {
+      entity  <- MyPersistentBehavior("fib1")
+      _       <- ZIO.foreach(1 to 100)(n => entity.send(Command.NextNumber(n)))
+      numbers <- getNumbers(entity)
+    } yield numbers
+  }
+
+  val app = {
+    for {
+      _ <- entityRun
+      _ <- entityRun.debug("state")
+    } yield ()
+  }
 
   override def run: ZIO[Environment & ZIOAppArgs & Scope, Any, Any] =
     app.provide(InMemoryJournal.live[MyPersistentBehavior.Event])

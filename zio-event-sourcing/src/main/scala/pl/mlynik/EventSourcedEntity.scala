@@ -7,8 +7,6 @@ object EventSourcedEntity {
     def state: UIO[STATE]
 
     def send(command: COMMAND): UIO[Unit]
-
-    def passivate: UIO[Unit]
   }
 
   enum Effect[+EVENT] {
@@ -17,14 +15,9 @@ object EventSourcedEntity {
   }
 
   object Effect {
-    def persist[EVENT](event: EVENT) = ZIO.succeed(Persist(event))
+    def persist[EVENT](event: EVENT): UIO[Effect.Persist[EVENT]] = ZIO.succeed(Persist(event))
 
-    def none = ZIO.succeed(None)
-  }
-
-  enum LoadState {
-    case Loading
-    case Hot
+    val none: UIO[Effect[Nothing]] = ZIO.succeed(None)
   }
 
   def apply[COMMAND, EVENT: Tag, STATE](
@@ -32,66 +25,53 @@ object EventSourcedEntity {
     emptyState: STATE,
     commandHandler: (STATE, COMMAND) => URIO[Journal[EVENT], Effect[EVENT]],
     eventHandler: (STATE, EVENT) => URIO[Journal[EVENT], STATE]
-  ): ZIO[Journal[EVENT], Journal.LoadError, EntityRef[COMMAND, STATE]] = {
+  ): ZIO[Journal[EVENT] & Scope, Journal.LoadError, EntityRef[COMMAND, STATE]] = {
 
-    case class State(offset: Int, entity: STATE, loadState: LoadState) {
+    case class State(offset: Int, entity: STATE) {
       def updateState(entity: STATE): State = this.copy(offset = offset + 1, entity = entity)
-
-      def changeLoadState(loadState: LoadState): State = this.copy(loadState = loadState)
     }
 
     def journalPlayback(
-      persistenceId: String,
       journal: Journal[EVENT],
-      currentState: Ref[State]
+      currentState: Ref.Synchronized[State]
     ) =
-      currentState.get.flatMap { st =>
+      currentState.updateAndGetZIO { st =>
         journal
           .load(persistenceId, st.offset)
           .runFoldZIO(st) { case (state, (offset, event)) =>
-            eventHandler(state.entity, event).flatMap(stateD =>
-              currentState.updateAndGet(_.copy(offset = offset, entity = stateD))
-            )
+            eventHandler(state.entity, event).map(stateD => st.copy(offset = offset, entity = stateD))
           }
-      } *> currentState.updateAndGet(_.changeLoadState(LoadState.Hot))
+      }
+
+    def handleEffect(journal: Journal[EVENT], state: State)(effect: Effect[EVENT]) =
+      effect match
+        case Effect.Persist(event) => journal.persist(persistenceId, event) *> eventHandler(state.entity, event)
+        case Effect.None           => ZIO.succeed(state.entity)
 
     def commandDispatch(
-      persistenceId: String,
       queue: Queue[COMMAND],
       journal: Journal[EVENT],
-      currentState: Ref[State]
+      currentState: Ref.Synchronized[State]
     ) =
-      currentState.get.flatMap { st =>
-        ZIO.when(st.loadState == LoadState.Hot) {
-          queue.take
-            .flatMap(cmd => commandHandler(st.entity, cmd))
-            .flatMap { effect =>
-              effect match
-                case Effect.Persist(event) => journal.persist(persistenceId, event) *> eventHandler(st.entity, event)
-                case Effect.None           => ZIO.succeed(st.entity)
-            }
-            .tap(stateD =>
-              currentState.update { state =>
-                state.updateState(stateD)
-              }
-            )
-        }
+      currentState.updateAndGetZIO { st =>
+        queue.take
+          .flatMap(cmd => commandHandler(st.entity, cmd))
+          .flatMap(handleEffect(journal, st))
+          .map(st.updateState)
       }.forever.fork
 
     for {
       journal      <- ZIO.service[Journal[EVENT]]
-      currentState <- Ref.make(State(0, emptyState, LoadState.Loading))
-      _            <- journalPlayback(persistenceId, journal, currentState)
+      currentState <- Ref.Synchronized.make(State(0, emptyState))
+      _            <- journalPlayback(journal, currentState)
       _            <- ZIO.logInfo(s"Loaded $persistenceId")
       commandQueue <- Queue.bounded[COMMAND](1024)
-      commandFiber <- commandDispatch(persistenceId, commandQueue, journal, currentState)
+      _            <- commandDispatch(commandQueue, journal, currentState)
 
     } yield new EntityRef[COMMAND, STATE] {
       override def state: UIO[STATE] = currentState.get.map(_._2)
 
       override def send(command: COMMAND): UIO[Unit] = commandQueue.offer(command).unit
-
-      override def passivate: UIO[Unit] = (commandFiber.interrupt).unit
     }
   }
 }
